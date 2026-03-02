@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.2].define(version: 2026_02_18_120001) do
+ActiveRecord::Schema[7.2].define(version: 2026_03_02_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pgcrypto"
   enable_extension "plpgsql"
@@ -186,6 +186,8 @@ ActiveRecord::Schema[7.2].define(version: 2026_02_18_120001) do
     t.uuid "parent_id"
     t.string "classification", default: "expense", null: false
     t.string "lucide_icon", default: "shapes", null: false
+    t.boolean "archived", default: false, null: false
+    t.index ["archived"], name: "index_categories_on_archived"
     t.index ["family_id"], name: "index_categories_on_family_id"
   end
 

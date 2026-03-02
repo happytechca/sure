@@ -200,6 +200,7 @@ Rails.application.routes.draw do
 
     post :bootstrap, on: :collection
     delete :destroy_all, on: :collection
+    patch :toggle_archive, on: :member
   end
 
   resources :reports, only: %i[index] do

@@ -1,12 +1,22 @@
 class CategoriesController < ApplicationController
-  before_action :set_category, only: %i[edit update destroy]
+  before_action :set_category, only: %i[edit update destroy toggle_archive]
   before_action :set_categories, only: %i[update edit]
   before_action :set_transaction, only: :create
 
   def index
-    @categories = Current.family.categories.alphabetically
+    @categories = Current.family.categories.active.alphabetically
 
     render layout: "settings"
+  end
+
+  def toggle_archive
+    if @category.archived?
+      @category.update(archived: false)
+    else
+      @category.update(archived: true)
+    end
+
+    redirect_back_or_to categories_path
   end
 
   def new
