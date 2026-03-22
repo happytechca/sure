@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.2].define(version: 2026_03_20_080659) do
+ActiveRecord::Schema[7.2].define(version: 2026_03_22_120702) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pgcrypto"
   enable_extension "plpgsql"
@@ -49,6 +49,8 @@ ActiveRecord::Schema[7.2].define(version: 2026_03_20_080659) do
     t.string "institution_name"
     t.string "institution_domain"
     t.text "notes"
+    t.jsonb "holdings_snapshot_data"
+    t.datetime "holdings_snapshot_at"
     t.index ["accountable_id", "accountable_type"], name: "index_accounts_on_accountable_id_and_accountable_type"
     t.index ["accountable_type"], name: "index_accounts_on_accountable_type"
     t.index ["currency"], name: "index_accounts_on_currency"
@@ -193,8 +195,8 @@ ActiveRecord::Schema[7.2].define(version: 2026_03_20_080659) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.uuid "parent_id"
-    t.string "lucide_icon", default: "shapes", null: false
     t.string "classification_unused", default: "expense", null: false
+    t.string "lucide_icon", default: "shapes", null: false
     t.index ["family_id"], name: "index_categories_on_family_id"
   end
 
@@ -705,8 +707,8 @@ ActiveRecord::Schema[7.2].define(version: 2026_03_20_080659) do
     t.date "sync_start_date"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
-    t.index ["indexa_capital_item_id", "indexa_capital_account_id"], name: "index_indexa_capital_accounts_on_item_and_account_id", unique: true, where: "(indexa_capital_account_id IS NOT NULL)"
     t.index ["indexa_capital_authorization_id"], name: "idx_on_indexa_capital_authorization_id_58db208d52"
+    t.index ["indexa_capital_item_id", "indexa_capital_account_id"], name: "index_indexa_capital_accounts_on_item_and_account_id", unique: true, where: "(indexa_capital_account_id IS NOT NULL)"
     t.index ["indexa_capital_item_id"], name: "index_indexa_capital_accounts_on_indexa_capital_item_id"
   end
 
@@ -1243,6 +1245,7 @@ ActiveRecord::Schema[7.2].define(version: 2026_03_20_080659) do
   create_table "snaptrade_accounts", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.uuid "snaptrade_item_id", null: false
     t.string "name"
+    t.string "account_id"
     t.string "snaptrade_account_id"
     t.string "snaptrade_authorization_id"
     t.string "account_number"
@@ -1264,6 +1267,7 @@ ActiveRecord::Schema[7.2].define(version: 2026_03_20_080659) do
     t.datetime "updated_at", null: false
     t.boolean "activities_fetch_pending", default: false
     t.date "sync_start_date"
+    t.index ["account_id"], name: "index_snaptrade_accounts_on_account_id", unique: true
     t.index ["snaptrade_item_id", "snaptrade_account_id"], name: "index_snaptrade_accounts_on_item_and_snaptrade_account_id", unique: true, where: "(snaptrade_account_id IS NOT NULL)"
     t.index ["snaptrade_item_id"], name: "index_snaptrade_accounts_on_snaptrade_item_id"
   end
@@ -1401,8 +1405,16 @@ ActiveRecord::Schema[7.2].define(version: 2026_03_20_080659) do
     t.datetime "updated_at", null: false
     t.string "currency"
     t.jsonb "locked_attributes", default: {}
+    t.decimal "realized_gain", precision: 19, scale: 4
+    t.decimal "cost_basis_amount", precision: 19, scale: 4
+    t.string "cost_basis_currency"
+    t.integer "holding_period_days"
+    t.string "realized_gain_confidence"
+    t.string "realized_gain_currency"
     t.string "investment_activity_label"
+    t.decimal "fee", precision: 19, scale: 10, default: "0.0", null: false
     t.index ["investment_activity_label"], name: "index_trades_on_investment_activity_label"
+    t.index ["realized_gain"], name: "index_trades_on_realized_gain_not_null", where: "(realized_gain IS NOT NULL)"
     t.index ["security_id"], name: "index_trades_on_security_id"
   end
 
@@ -1416,12 +1428,14 @@ ActiveRecord::Schema[7.2].define(version: 2026_03_20_080659) do
     t.string "external_id"
     t.jsonb "extra", default: {}, null: false
     t.string "investment_activity_label"
+    t.uuid "security_id"
     t.index ["category_id"], name: "index_transactions_on_category_id"
     t.index ["external_id"], name: "index_transactions_on_external_id"
     t.index ["extra"], name: "index_transactions_on_extra", using: :gin
     t.index ["investment_activity_label"], name: "index_transactions_on_investment_activity_label"
     t.index ["kind"], name: "index_transactions_on_kind"
     t.index ["merchant_id"], name: "index_transactions_on_merchant_id"
+    t.index ["security_id"], name: "index_transactions_on_security_id"
   end
 
   create_table "transfers", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -1578,6 +1592,7 @@ ActiveRecord::Schema[7.2].define(version: 2026_03_20_080659) do
   add_foreign_key "trades", "securities"
   add_foreign_key "transactions", "categories", on_delete: :nullify
   add_foreign_key "transactions", "merchants"
+  add_foreign_key "transactions", "securities"
   add_foreign_key "transfers", "transactions", column: "inflow_transaction_id", on_delete: :cascade
   add_foreign_key "transfers", "transactions", column: "outflow_transaction_id", on_delete: :cascade
   add_foreign_key "users", "accounts", column: "default_account_id", on_delete: :nullify

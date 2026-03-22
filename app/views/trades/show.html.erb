@@ -13,35 +13,89 @@
         <%= styled_form_with model: @entry,
               url: trade_path(@entry),
               class: "space-y-2",
-              data: { controller: "auto-submit-form" } do |f| %>
+              data: { controller: "trade-recalculate" } do |f| %>
           <%= f.date_field :date,
                 label: t(".date_label"),
                 max: Date.current,
                 disabled: @entry.linked?,
-                "data-auto-submit-form-target": "auto" %>
+                "data-trade-recalculate-target": "date",
+                "data-action": "change->trade-recalculate#inputChanged" %>
           <div class="flex items-center gap-2">
             <%= f.select :nature,
                           [[t(".buy"), "outflow"], [t(".sell"), "inflow"]],
                           { container_class: "w-1/3", label: t(".type_label"), selected: @entry.amount.positive? ? "outflow" : "inflow" },
-                          { data: { "auto-submit-form-target": "auto" }, disabled: @entry.linked? } %>
+                          { disabled: @entry.linked?,
+                            "data-trade-recalculate-target": "nature",
+                            "data-action": "change->trade-recalculate#inputChanged" } %>
             <%= f.fields_for :entryable do |ef| %>
               <%= ef.number_field :qty,
                   label: t(".quantity_label"),
                   step: "any",
                   value: trade.qty.abs,
-                  "data-auto-submit-form-target": "auto",
+                  "data-trade-recalculate-target": "qty",
+                  "data-action": "change->trade-recalculate#fieldChanged",
                   disabled: @entry.linked? %>
             <% end %>
           </div>
-          <%= f.fields_for :entryable do |ef| %>
-            <%= ef.money_field :price,
-                  label: t(".cost_per_share_label"),
+          <div data-trade-recalculate-target="price" data-action="change->trade-recalculate#fieldChanged">
+            <%= f.fields_for :entryable do |ef| %>
+              <%= ef.money_field :price,
+                    label: t(".cost_per_share_label"),
+                    disable_currency: true,
+                    min: 0,
+                    step: "any",
+                    disabled: @entry.linked? %>
+            <% end %>
+          </div>
+          <div data-trade-recalculate-target="fee" data-action="change->trade-recalculate#fieldChanged">
+            <%= f.fields_for :entryable do |ef| %>
+              <%= ef.money_field :fee,
+                    label: t(".fee_label"),
+                    disable_currency: true,
+                    min: 0,
+                    step: "any",
+                    disabled: @entry.linked? %>
+            <% end %>
+          </div>
+          <div data-trade-recalculate-target="total" data-action="change->trade-recalculate#totalChanged">
+            <%= f.money_field :amount,
+                  label: t(".total_label"),
                   disable_currency: true,
-                  auto_submit: true,
-                  min: 0,
                   step: "any",
-                  precision: 10,
                   disabled: @entry.linked? %>
+          </div>
+          <div data-trade-recalculate-target="picker" class="hidden p-3 rounded-lg bg-container-inset space-y-2">
+            <p class="text-sm text-secondary"><%= t(".recalculate_prompt") %></p>
+            <div class="space-y-1">
+              <label class="flex items-center gap-2 text-sm">
+                <input type="radio" name="recalculate" value="price" checked
+                       data-action="trade-recalculate#select">
+                <%= t(".recalculate_price") %>
+              </label>
+              <label class="flex items-center gap-2 text-sm">
+                <input type="radio" name="recalculate" value="qty"
+                       data-action="trade-recalculate#select">
+                <%= t(".recalculate_qty") %>
+              </label>
+              <label class="flex items-center gap-2 text-sm">
+                <input type="radio" name="recalculate" value="fee"
+                       data-action="trade-recalculate#select">
+                <%= t(".recalculate_fee") %>
+              </label>
+            </div>
+          </div>
+          <% unless @entry.linked? %>
+            <div class="hidden flex justify-end gap-2 pt-2" data-trade-recalculate-target="actions">
+              <button type="button"
+                      class="inline-flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium text-primary bg-gray-200 hover:bg-gray-300 theme-dark:bg-gray-700 theme-dark:hover:bg-gray-600"
+                      data-action="click->trade-recalculate#discard">
+                <%= t(".discard") %>
+              </button>
+              <button type="submit"
+                      class="inline-flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium text-inverse bg-inverse hover:bg-inverse-hover">
+                <%= t(".save") %>
+              </button>
+            </div>
           <% end %>
         <% end %>
       </div>
