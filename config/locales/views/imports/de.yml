@@ -22,9 +22,6 @@ de:
         empty_state_primary: In dieser QIF-Datei wurden keine Kategorien oder Tags gefunden.
         empty_state_secondary: Alle Transaktionen werden ohne Kategorien und Tags importiert.
         submit: Weiter zur Überprüfung
-        split_warning_title: Aufgeteilte Buchungen erkannt
-        split_warning_description: "Diese QIF-Datei enthält aufgeteilte Buchungen. Aufgeteilte Buchungen werden noch nicht unterstützt – jede aufgeteilte Buchung wird als einzelne Buchung mit ihrem Gesamtbetrag und ohne Kategorie importiert. Die einzelnen Aufteilungsdetails werden nicht übernommen."
-        split_badge: aufgeteilt
     cleans:
       show:
         description: Bearbeite deine Daten in der Tabelle unten. Rote Zellen sind ungültig.

@@ -83,25 +83,15 @@ class QifImport < Import
     @qif_account_type = raw_file_str.present? ? QifParser.account_type(raw_file_str) : nil
   end
 
-  # Unique categories used across all rows (blank entries excluded).
+  # Unique categories used across all rows (blank entries excluded),
+  # including categories from split transaction details.
   def row_categories
-    rows.distinct.pluck(:category).reject(&:blank?).sort
-  end
-
-  # Returns true if the QIF file contains any split transactions.
-  def has_split_transactions?
-    return @has_split_transactions if defined?(@has_split_transactions)
-    @has_split_transactions = parsed_transactions_with_splits.any?(&:split)
-  end
-
-  # Categories that appear on split transactions in the QIF file.
-  # Split transactions use S/$ fields to break a total into sub-amounts;
-  # the app does not yet support splits, so these categories are flagged.
-  def split_categories
-    return @split_categories if defined?(@split_categories)
-
-    split_cats = parsed_transactions_with_splits.select(&:split).map(&:category).reject(&:blank?).uniq.sort
-    @split_categories = split_cats & row_categories
+    row_cats = rows.distinct.pluck(:category).reject(&:blank?)
+    split_cats = rows.where.not(split_data: nil).pluck(:split_data).flat_map do |data|
+      parsed = data.is_a?(String) ? JSON.parse(data) : data
+      parsed.map { |sd| sd["category"] }
+    end
+    (row_cats + split_cats).reject(&:blank?).uniq.sort
   end
 
   # Unique tags used across all rows (blank entries excluded).
@@ -121,10 +111,6 @@ class QifImport < Import
 
   private
 
-    def parsed_transactions_with_splits
-      @parsed_transactions_with_splits ||= QifParser.parse(raw_file_str)
-    end
-
     def investment_account?
       qif_account_type == "Invst"
     end
@@ -137,6 +123,10 @@ class QifImport < Import
       transactions = QifParser.parse(raw_file_str)
 
       mapped_rows = transactions.map do |trn|
+        split_data = if trn.split && trn.split_details.any?
+          trn.split_details.map { |sd| { category: sd.category, amount: sd.amount, memo: sd.memo } }.to_json
+        end
+
         {
           date:                   trn.date.to_s,
           amount:                 trn.amount.to_s,
@@ -145,6 +135,8 @@ class QifImport < Import
           notes:                  trn.memo.to_s,
           category:               trn.category.to_s,
           tags:                   trn.tags.join("|"),
+          split_data:             split_data,
+          fee:                    "",
           account:                "",
           qty:                    "",
           ticker:                 "",
@@ -176,6 +168,24 @@ class QifImport < Import
             currency:               default_currency.to_s,
             name:                   trade_row_name(trn),
             notes:                  trn.memo.to_s,
+            fee:                    trn.commission.to_s,
+            category:               "",
+            tags:                   "",
+            account:                "",
+            exchange_operating_mic: "",
+            entity_type:            trn.action
+          }
+        elsif QifParser::INCOME_TRADE_ACTIONS.include?(trn.action)
+          {
+            date:                   trn.date.to_s,
+            ticker:                 trn.security_ticker.to_s,
+            qty:                    "0",
+            price:                  "0",
+            amount:                 trn.amount.to_s,
+            currency:               default_currency.to_s,
+            name:                   transaction_row_name(trn),
+            notes:                  trn.memo.to_s,
+            fee:                    "",
             category:               "",
             tags:                   "",
             account:                "",
@@ -189,6 +199,7 @@ class QifImport < Import
             currency:               default_currency.to_s,
             name:                   transaction_row_name(trn),
             notes:                  trn.memo.to_s,
+            fee:                    "",
             category:               trn.category.to_s,
             tags:                   trn.tags.join("|"),
             account:                "",
@@ -212,32 +223,38 @@ class QifImport < Import
     # ------------------------------------------------------------------
 
     def import_transaction_rows!
-      transactions = rows.map do |row|
-        category = mappings.categories.mappable_for(row.category)
-        tags     = row.tags_list.map { |tag| mappings.tags.mappable_for(tag) }.compact
+      split_rows, normal_rows = rows.partition { |r| r.split_data.present? }
 
-        Transaction.new(
-          category: category,
-          tags:     tags,
-          entry:    Entry.new(
-            account:      account,
-            date:         row.date_iso,
-            amount:       row.signed_amount,
-            name:         row.name,
-            currency:     row.currency,
-            notes:        row.notes,
-            import:       self,
-            import_locked: true
-          )
-        )
+      if normal_rows.any?
+        transactions = normal_rows.map { |row| build_transaction_from_row(row) }
+        Transaction.import!(transactions, recursive: true)
       end
 
-      Transaction.import!(transactions, recursive: true)
+      split_rows.each do |row|
+        parent_txn = build_transaction_from_row(row)
+        parent_txn.save!
+
+        # Split amounts from QIF are raw (e.g. -100.00 for expenses).
+        # Apply the same signage convention as the parent entry amount.
+        signage_multiplier = signage_convention == "inflows_positive" ? -1 : 1
+
+        splits = JSON.parse(row.split_data).map do |sd|
+          category = mappings.categories.mappable_for(sd["category"])
+          {
+            amount:      sd["amount"].to_d * signage_multiplier,
+            category_id: category&.id,
+            name:        sd["memo"].presence || row.name
+          }
+        end
+
+        parent_txn.entry.split!(splits)
+      end
     end
 
     def import_investment_rows!
-      trade_rows       = rows.select { |r| QifParser::TRADE_ACTIONS.include?(r.entity_type) }
-      transaction_rows = rows.reject { |r| QifParser::TRADE_ACTIONS.include?(r.entity_type) }
+      trade_rows        = rows.select { |r| QifParser::TRADE_ACTIONS.include?(r.entity_type) }
+      income_trade_rows = rows.select { |r| QifParser::INCOME_TRADE_ACTIONS.include?(r.entity_type) }
+      transaction_rows  = rows.reject { |r| QifParser::TRADE_ACTIONS.include?(r.entity_type) || QifParser::INCOME_TRADE_ACTIONS.include?(r.entity_type) }
 
       if trade_rows.any?
         trades = trade_rows.map do |row|
@@ -246,11 +263,13 @@ class QifImport < Import
           # Use the stored T-field amount for accuracy (includes any fees/commissions).
           # Buy-like actions are cash outflows (positive); sell-like are inflows (negative).
           entry_amount = QifParser::BUY_LIKE_ACTIONS.include?(row.entity_type) ? row.amount.to_d : -row.amount.to_d
+          fee = row.fee.present? ? row.fee.to_d : 0
 
           Trade.new(
             security:                  security,
             qty:                       row.qty.to_d,
             price:                     row.price.to_d,
+            fee:                       fee,
             currency:                  row.currency,
             investment_activity_label: investment_activity_label_for(row.entity_type),
             entry:                     Entry.new(
@@ -266,6 +285,36 @@ class QifImport < Import
         end
 
         Trade.import!(trades, recursive: true)
+      end
+
+      if income_trade_rows.any?
+        income_trades = income_trade_rows.map do |row|
+          security = if row.ticker.present?
+            find_or_create_security(ticker: row.ticker)
+          else
+            Security.cash_for(account)
+          end
+
+          Trade.new(
+            security:                  security,
+            qty:                       0,
+            price:                     0,
+            fee:                       0,
+            currency:                  row.currency,
+            investment_activity_label: investment_activity_label_for(row.entity_type),
+            entry:                     Entry.new(
+              account:      account,
+              date:         row.date_iso,
+              amount:       -row.amount.to_d,  # income = negative entry amount (inflow)
+              name:         row.name,
+              currency:     row.currency,
+              import:       self,
+              import_locked: true
+            )
+          )
+        end
+
+        Trade.import!(income_trades, recursive: true)
       end
 
       if transaction_rows.any?
@@ -300,6 +349,26 @@ class QifImport < Import
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def build_transaction_from_row(row)
+      category = mappings.categories.mappable_for(row.category)
+      tags     = row.tags_list.map { |tag| mappings.tags.mappable_for(tag) }.compact
+
+      Transaction.new(
+        category: category,
+        tags:     tags,
+        entry:    Entry.new(
+          account:      account,
+          date:         row.date_iso,
+          amount:       row.signed_amount,
+          name:         row.name,
+          currency:     row.currency,
+          notes:        row.notes,
+          import:       self,
+          import_locked: true
+        )
+      )
+    end
 
     def adjust_opening_anchor_if_needed!
       manager = Account::OpeningBalanceManager.new(account)
@@ -336,7 +405,15 @@ class QifImport < Import
 
     def investment_activity_label_for(action)
       return nil if action.blank?
-      QifParser::BUY_LIKE_ACTIONS.include?(action) ? "Buy" : "Sell"
+
+      case action
+      when *QifParser::BUY_LIKE_ACTIONS  then "Buy"
+      when *QifParser::SELL_LIKE_ACTIONS then "Sell"
+      when "Div"     then "Dividend"
+      when "IntInc"  then "Interest"
+      when "CGLong"  then "Dividend"
+      when "CGShort" then "Dividend"
+      end
     end
 
     def trade_row_name(trn)

@@ -22,9 +22,6 @@ fr:
         empty_state_primary: Aucune catégorie ou étiquette trouvée dans ce fichier QIF.
         empty_state_secondary: Toutes les transactions seront importées sans catégories ni étiquettes.
         submit: Continuer vers la revue
-        split_warning_title: Transactions scindées détectées
-        split_warning_description: "Ce fichier QIF contient des transactions scindées. Les transactions scindées ne sont pas encore prises en charge : chaque transaction scindée sera importée comme une transaction unique avec son montant total et sans catégorie. Les ventilations individuelles ne seront pas conservées."
-        split_badge: scindée
     cleans:
       show:
         description: Modifiez vos données dans le tableau ci-dessous. Les cellules rouges sont invalides.

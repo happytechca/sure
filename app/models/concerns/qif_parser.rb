@@ -37,12 +37,19 @@ module QifParser
   SELL_LIKE_ACTIONS = %w[Sell ShtSell].freeze
   TRADE_ACTIONS     = (BUY_LIKE_ACTIONS + SELL_LIKE_ACTIONS).freeze
 
-  # Investment action types that create Transaction records.
-  INFLOW_TRANSACTION_ACTIONS  = %w[Div IntInc XIn CGLong CGShort MiscInc].freeze
+  # Investment action types that become income Trades (qty: 0, price: 0, with security).
+  DIVIDEND_LIKE_ACTIONS = %w[Div CGLong CGShort].freeze
+  INTEREST_LIKE_ACTIONS = %w[IntInc].freeze
+  INCOME_TRADE_ACTIONS  = (DIVIDEND_LIKE_ACTIONS + INTEREST_LIKE_ACTIONS).freeze
+
+  # Investment action types that create Transaction records (cash movements, not security-related).
+  INFLOW_TRANSACTION_ACTIONS  = %w[XIn MiscInc].freeze
   OUTFLOW_TRANSACTION_ACTIONS = %w[XOut MiscExp].freeze
 
+  SplitDetail = Struct.new(:category, :amount, :memo, keyword_init: true)
+
   ParsedTransaction = Struct.new(
-    :date, :amount, :payee, :memo, :category, :tags, :check_num, :cleared, :split,
+    :date, :amount, :payee, :memo, :category, :tags, :check_num, :cleared, :split, :split_details,
     keyword_init: true
   )
 
@@ -54,6 +61,7 @@ module QifParser
   ParsedInvestmentTransaction = Struct.new(
     :date, :action, :security_name, :security_ticker,
     :price, :qty, :amount, :memo, :payee, :category, :tags,
+    :commission,
     keyword_init: true
   )
 
@@ -279,11 +287,19 @@ module QifParser
         value = line[1..]&.strip
         next unless code
 
-        # Mark records that contain split fields (S = split category, $ = split amount)
-        current["_split"] = true if code == "S"
-
-        # Flag fields like "I" (income) and "E" (expense) have no meaningful value
-        current[code] = value.presence
+        if code == "S"
+          current["_split"] = true
+          current["_split_details"] ||= []
+          current["_split_details"] << { "S" => value }
+          # Also store as regular field for non-transaction sections (e.g. Security ticker)
+          current[code] = value.presence
+        elsif code == "$" && current["_split_details"]&.any?
+          current["_split_details"].last["$"] = value
+        elsif code == "E" && current["_split_details"]&.any?
+          current["_split_details"].last["E"] = value
+        else
+          current[code] = value.presence
+        end
       end
     end
 
@@ -309,16 +325,29 @@ module QifParser
 
     category, tags = parse_category_and_tags(record["L"])
 
+    split_details = (record["_split_details"] || []).filter_map do |detail|
+      raw_amount = parse_qif_amount(detail["$"])
+      next unless raw_amount
+
+      cat_name, _tags = parse_category_and_tags(detail["S"])
+      SplitDetail.new(
+        category: cat_name,
+        amount:   raw_amount,
+        memo:     detail["E"]
+      )
+    end
+
     ParsedTransaction.new(
-      date:      date,
-      amount:    amount,
-      payee:     record["P"],
-      memo:      record["M"],
-      category:  category,
-      tags:      tags,
-      check_num: record["N"],
-      cleared:   record["C"],
-      split:     record["_split"] == true
+      date:          date,
+      amount:        amount,
+      payee:         record["P"],
+      memo:          record["M"],
+      category:      category,
+      tags:          tags,
+      check_num:     record["N"],
+      cleared:       record["C"],
+      split:         record["_split"] == true,
+      split_details: split_details
     )
   end
   private_class_method :build_transaction
@@ -409,6 +438,7 @@ module QifParser
     amount = parse_qif_amount(record["T"] || record["U"])
 
     category, tags = parse_category_and_tags(record["L"])
+    commission = parse_qif_amount(record["O"])
 
     ParsedInvestmentTransaction.new(
       date:            date,
@@ -421,7 +451,8 @@ module QifParser
       memo:            record["M"]&.strip,
       payee:           record["P"]&.strip,
       category:        category,
-      tags:            tags
+      tags:            tags,
+      commission:      commission
     )
   end
   private_class_method :build_investment_transaction

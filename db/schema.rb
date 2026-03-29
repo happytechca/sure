@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.2].define(version: 2026_03_28_120000) do
+ActiveRecord::Schema[7.2].define(version: 2026_03_29_134341) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pgcrypto"
   enable_extension "plpgsql"
@@ -40,7 +40,7 @@ ActiveRecord::Schema[7.2].define(version: 2026_03_28_120000) do
     t.index ["account_id"], name: "index_account_shares_on_account_id"
     t.index ["user_id", "include_in_finances"], name: "index_account_shares_on_user_id_and_include_in_finances"
     t.index ["user_id"], name: "index_account_shares_on_user_id"
-    t.check_constraint "permission::text = ANY (ARRAY['full_control'::character varying, 'read_write'::character varying, 'read_only'::character varying]::text[])", name: "chk_account_shares_permission"
+    t.check_constraint "permission::text = ANY (ARRAY['full_control'::character varying::text, 'read_write'::character varying::text, 'read_only'::character varying::text])", name: "chk_account_shares_permission"
   end
 
   create_table "accounts", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -211,8 +211,8 @@ ActiveRecord::Schema[7.2].define(version: 2026_03_28_120000) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.uuid "parent_id"
-    t.string "lucide_icon", default: "shapes", null: false
     t.string "classification_unused", default: "expense", null: false
+    t.string "lucide_icon", default: "shapes", null: false
     t.index ["family_id"], name: "index_categories_on_family_id"
   end
 
@@ -535,7 +535,7 @@ ActiveRecord::Schema[7.2].define(version: 2026_03_28_120000) do
     t.string "moniker", default: "Family", null: false
     t.string "assistant_type", default: "builtin", null: false
     t.string "default_account_sharing", default: "shared", null: false
-    t.check_constraint "default_account_sharing::text = ANY (ARRAY['shared'::character varying, 'private'::character varying]::text[])", name: "chk_families_default_account_sharing"
+    t.check_constraint "default_account_sharing::text = ANY (ARRAY['shared'::character varying::text, 'private'::character varying::text])", name: "chk_families_default_account_sharing"
     t.check_constraint "month_start_day >= 1 AND month_start_day <= 28", name: "month_start_day_range"
   end
 
@@ -661,6 +661,8 @@ ActiveRecord::Schema[7.2].define(version: 2026_03_28_120000) do
     t.string "effective_date"
     t.text "conditions"
     t.text "actions"
+    t.string "fee"
+    t.jsonb "split_data"
     t.index ["import_id"], name: "index_import_rows_on_import_id"
   end
 
@@ -1180,7 +1182,7 @@ ActiveRecord::Schema[7.2].define(version: 2026_03_28_120000) do
     t.index ["country_code"], name: "index_securities_on_country_code"
     t.index ["exchange_operating_mic"], name: "index_securities_on_exchange_operating_mic"
     t.index ["kind"], name: "index_securities_on_kind"
-    t.check_constraint "kind = ANY (ARRAY['standard'::text, 'cash'::text])", name: "chk_securities_kind"
+    t.check_constraint "kind::text = ANY (ARRAY['standard'::character varying, 'cash'::character varying]::text[])", name: "chk_securities_kind"
   end
 
   create_table "security_prices", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -1509,10 +1511,6 @@ ActiveRecord::Schema[7.2].define(version: 2026_03_28_120000) do
     t.jsonb "locked_attributes", default: {}
     t.string "kind", default: "reconciliation", null: false
   end
-
-# Could not dump table "vector_store_chunks" because of following StandardError
-#   Unknown type 'vector(768)' for column 'embedding'
-
 
   create_table "vehicles", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.datetime "created_at", null: false

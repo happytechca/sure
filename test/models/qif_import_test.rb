@@ -110,6 +110,7 @@ class QifImportTest < ActiveSupport::TestCase
     Q2
     U132.20
     T132.20
+    O9.95
     ^
     D1/ 7'22
     NXIn
@@ -333,6 +334,39 @@ class QifImportTest < ActiveSupport::TestCase
     assert_equal "", walmart.category, "Expected --Split-- to be stripped from category"
   end
 
+  test "parse populates split_details with categories, amounts, and memos" do
+    transactions = QifParser.parse(QIF_WITH_SPLITS)
+    split_txn = transactions.find { |t| t.payee == "Grocery & Hardware Store" }
+
+    assert_equal 2, split_txn.split_details.length
+
+    first = split_txn.split_details[0]
+    assert_equal "Food & Dining", first.category
+    assert_equal "-100.00", first.amount
+    assert_equal "Groceries", first.memo
+
+    second = split_txn.split_details[1]
+    assert_equal "Household", second.category
+    assert_equal "-50.00", second.amount
+    assert_equal "Supplies", second.memo
+  end
+
+  test "parse populates split_details for --Split-- placeholder transactions" do
+    transactions = QifParser.parse(QIF_WITH_SPLIT_PLACEHOLDER)
+    walmart = transactions.find { |t| t.payee == "Walmart" }
+
+    assert_equal 3, walmart.split_details.length
+    assert_equal "Clothing", walmart.split_details[0].category
+    assert_equal "-25.00", walmart.split_details[0].amount
+  end
+
+  test "parse returns empty split_details for non-split transactions" do
+    transactions = QifParser.parse(QIF_WITH_SPLITS)
+    normal = transactions.find { |t| t.payee == "Electric Company" }
+
+    assert_empty normal.split_details
+  end
+
   test "parse preserves normal category alongside --Split-- placeholder" do
     transactions = QifParser.parse(QIF_WITH_SPLIT_PLACEHOLDER)
     coffee = transactions.find { |t| t.payee == "Coffee Shop" }
@@ -424,43 +458,24 @@ class QifImportTest < ActiveSupport::TestCase
     refute_includes tags, ""
   end
 
-  test "split_categories returns categories from split transactions" do
+  test "row_categories includes categories from split details" do
     @import.update!(raw_file_str: QIF_WITH_SPLITS)
     @import.generate_rows_from_csv
 
-    split_cats = @import.split_categories
-    assert_includes split_cats, "Food & Dining"
-    refute_includes split_cats, "Utilities"
+    cats = @import.row_categories
+    assert_includes cats, "Food & Dining"
+    assert_includes cats, "Household"
+    assert_includes cats, "Utilities"
   end
 
-  test "split_categories returns empty when no splits" do
-    @import.update!(raw_file_str: SAMPLE_QIF)
-    @import.generate_rows_from_csv
-
-    assert_empty @import.split_categories
-  end
-
-  test "has_split_transactions? returns true when splits exist" do
-    @import.update!(raw_file_str: QIF_WITH_SPLITS)
-    assert @import.has_split_transactions?
-  end
-
-  test "has_split_transactions? returns true for --Split-- placeholder" do
-    @import.update!(raw_file_str: QIF_WITH_SPLIT_PLACEHOLDER)
-    assert @import.has_split_transactions?
-  end
-
-  test "has_split_transactions? returns false when no splits" do
-    @import.update!(raw_file_str: SAMPLE_QIF)
-    refute @import.has_split_transactions?
-  end
-
-  test "split_categories is empty when splits use --Split-- placeholder" do
+  test "row_categories excludes --Split-- placeholder" do
     @import.update!(raw_file_str: QIF_WITH_SPLIT_PLACEHOLDER)
     @import.generate_rows_from_csv
 
-    assert_empty @import.split_categories
     refute_includes @import.row_categories, "--Split--"
+    assert_includes @import.row_categories, "Clothing"
+    assert_includes @import.row_categories, "Food"
+    assert_includes @import.row_categories, "Home Improvement"
   end
 
   test "categories_selected? is false before sync_mappings" do
@@ -706,6 +721,16 @@ class QifImportTest < ActiveSupport::TestCase
     assert_equal "ACME",   div.security_ticker
   end
 
+  test "parse_investment_transactions extracts commission from O field" do
+    buy = QifParser.parse_investment_transactions(SAMPLE_INVST_QIF).find { |t| t.action == "Buy" }
+    assert_equal "9.95", buy.commission
+  end
+
+  test "parse_investment_transactions returns nil commission when O field absent" do
+    div = QifParser.parse_investment_transactions(SAMPLE_INVST_QIF).find { |t| t.action == "Div" }
+    assert_nil div.commission
+  end
+
   test "parse_investment_transactions extracts payee for cash actions" do
     xin = QifParser.parse_investment_transactions(SAMPLE_INVST_QIF).find { |t| t.action == "XIn" }
     assert_equal "Monthly Deposit", xin.payee
@@ -748,7 +773,7 @@ class QifImportTest < ActiveSupport::TestCase
     assert_equal "-3.0", sell_row.qty
   end
 
-  test "generates transaction row for Div with security name in row name" do
+  test "generates income trade row for Div with ticker and zero qty/price" do
     @import.update!(raw_file_str: SAMPLE_INVST_QIF)
     @import.generate_rows_from_csv
 
@@ -756,6 +781,9 @@ class QifImportTest < ActiveSupport::TestCase
     assert_not_nil div_row
     assert_equal "Dividend: ACME", div_row.name
     assert_equal "190.75",         div_row.amount
+    assert_equal "ACME",           div_row.ticker
+    assert_equal "0",              div_row.qty
+    assert_equal "0",              div_row.price
   end
 
   test "generates transaction row for XIn using payee as name" do
@@ -769,7 +797,7 @@ class QifImportTest < ActiveSupport::TestCase
 
   # ── Investment (Invst) QIF: import! ─────────────────────────────────────────
 
-  test "import! creates Trade records for buy and sell rows" do
+  test "import! creates Trade records for buy, sell, and income rows" do
     import = QifImport.create!(family: @family, account: accounts(:investment))
     import.update!(raw_file_str: SAMPLE_INVST_QIF)
     import.generate_rows_from_csv
@@ -777,12 +805,13 @@ class QifImportTest < ActiveSupport::TestCase
 
     Security::Resolver.any_instance.stubs(:resolve).returns(securities(:aapl))
 
-    assert_difference "Trade.count", 2 do
+    # Buy + Sell + Div (income trade) = 3 trades
+    assert_difference "Trade.count", 3 do
       import.import!
     end
   end
 
-  test "import! creates Transaction records for dividend and cash rows" do
+  test "import! creates Transaction records for cash-only rows" do
     import = QifImport.create!(family: @family, account: accounts(:investment))
     import.update!(raw_file_str: SAMPLE_INVST_QIF)
     import.generate_rows_from_csv
@@ -790,12 +819,13 @@ class QifImportTest < ActiveSupport::TestCase
 
     Security::Resolver.any_instance.stubs(:resolve).returns(securities(:aapl))
 
-    assert_difference "Transaction.count", 2 do
+    # Only XIn remains as a Transaction
+    assert_difference "Transaction.count", 1 do
       import.import!
     end
   end
 
-  test "import! creates inflow Entry for Div (negative amount)" do
+  test "import! creates income Trade for Div with correct attributes" do
     import = QifImport.create!(family: @family, account: accounts(:investment))
     import.update!(raw_file_str: SAMPLE_INVST_QIF)
     import.generate_rows_from_csv
@@ -808,6 +838,26 @@ class QifImportTest < ActiveSupport::TestCase
     assert_not_nil div_entry
     assert div_entry.amount.negative?, "Dividend should be an inflow (negative amount)"
     assert_in_delta(-190.75, div_entry.amount, 0.01)
+
+    trade = div_entry.entryable
+    assert_instance_of Trade, trade
+    assert_equal 0, trade.qty
+    assert_equal 0, trade.price
+    assert_equal "Dividend", trade.investment_activity_label
+  end
+
+  test "import! sets fee on Trade from commission" do
+    import = QifImport.create!(family: @family, account: accounts(:investment))
+    import.update!(raw_file_str: SAMPLE_INVST_QIF)
+    import.generate_rows_from_csv
+    import.sync_mappings
+
+    Security::Resolver.any_instance.stubs(:resolve).returns(securities(:aapl))
+    import.import!
+
+    buy_entry = accounts(:investment).entries.find_by(name: "Buy 2.0 shares of ACME")
+    assert_not_nil buy_entry
+    assert_in_delta 9.95, buy_entry.entryable.fee, 0.01
   end
 
   test "import! creates outflow Entry for Buy (positive amount)" do
@@ -842,6 +892,80 @@ class QifImportTest < ActiveSupport::TestCase
       .find_by("trades.qty < 0")
     assert_not_nil sell_entry
     assert sell_entry.amount.negative?, "Sell trade should be an inflow (negative amount)"
+  end
+
+  # ── Split transaction import ──────────────────────────────────────────────────
+
+  test "import! creates parent and child entries for split transactions" do
+    @import.update!(raw_file_str: QIF_WITH_SPLITS)
+    @import.generate_rows_from_csv
+    @import.sync_mappings
+    @import.import!
+
+    # Split transaction creates parent + 2 children = 3 entries
+    # Normal transaction creates 1 entry
+    # Total: 4 entries
+    parent_entry = @account.entries.find_by(name: "Grocery & Hardware Store")
+    assert_not_nil parent_entry
+    assert_equal 2, parent_entry.child_entries.count
+
+    child_amounts = parent_entry.child_entries.map(&:amount).sort
+    assert_in_delta(50.0, child_amounts[0], 0.01)
+    assert_in_delta(100.0, child_amounts[1], 0.01)
+  end
+
+  test "import! assigns split child names from memo field" do
+    @import.update!(raw_file_str: QIF_WITH_SPLITS)
+    @import.generate_rows_from_csv
+    @import.sync_mappings
+    @import.import!
+
+    parent_entry = @account.entries.find_by(name: "Grocery & Hardware Store")
+    child_names = parent_entry.child_entries.map(&:name).sort
+
+    assert_includes child_names, "Groceries"
+    assert_includes child_names, "Supplies"
+  end
+
+  test "import! creates normal transaction alongside split transaction" do
+    @import.update!(raw_file_str: QIF_WITH_SPLITS)
+    @import.generate_rows_from_csv
+    @import.sync_mappings
+    @import.import!
+
+    normal_entry = @account.entries.find_by(name: "Electric Company")
+    assert_not_nil normal_entry
+    assert_in_delta(75.0, normal_entry.amount, 0.01)
+  end
+
+  test "generates rows with split_data for split transactions" do
+    @import.update!(raw_file_str: QIF_WITH_SPLITS)
+    @import.generate_rows_from_csv
+
+    split_row = @import.rows.find_by(name: "Grocery & Hardware Store")
+    assert_not_nil split_row.split_data
+
+    parsed = JSON.parse(split_row.split_data)
+    assert_equal 2, parsed.length
+    assert_equal "Food & Dining", parsed[0]["category"]
+    assert_equal "-100.00", parsed[0]["amount"]
+  end
+
+  test "generates rows without split_data for normal transactions" do
+    @import.update!(raw_file_str: QIF_WITH_SPLITS)
+    @import.generate_rows_from_csv
+
+    normal_row = @import.rows.find_by(name: "Electric Company")
+    assert_nil normal_row.split_data
+  end
+
+  test "generates trade row with fee from commission" do
+    @import.update!(raw_file_str: SAMPLE_INVST_QIF)
+    @import.account = accounts(:investment)
+    @import.generate_rows_from_csv
+
+    buy_row = @import.rows.find_by(entity_type: "Buy")
+    assert_equal "9.95", buy_row.fee
   end
 
   test "will_adjust_opening_anchor? returns false for investment accounts" do
